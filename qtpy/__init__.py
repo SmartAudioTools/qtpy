@@ -59,10 +59,108 @@ import os
 import platform
 import sys
 import warnings
+import importlib
 
 # Version of QtPy
 __version__ = '2.4.0.dev0'
 
+if os.name == "nt":
+    from nt import environ as environ_nt
+    import winreg
+    import ctypes
+    import subprocess
+
+    orignal_environ = {key.upper(): value for key, value in environ_nt.items()}
+
+    python_redefined_keys = set()
+    for key, value in os.environ.items():
+        if orignal_environ.get(key) != value:
+            python_redefined_keys.add(key)
+
+    def get_env(key, default=None):
+        if key in python_redefined_keys:
+            return os.environ[key]
+        for reg_key in (
+            winreg.CreateKey(winreg.HKEY_CURRENT_USER, r"Environment"),
+            winreg.CreateKey(
+                winreg.HKEY_LOCAL_MACHINE,
+                r"System\CurrentControlSet\Control\Session Manager\Environment",
+            ),
+        ):
+            try:
+                return winreg.QueryValueEx(reg_key, key)[0]
+            except FileNotFoundError:
+                pass
+        return os.environ.get(key, default)  # utuile ?
+
+    def set_env(key, value):
+        info = subprocess.STARTUPINFO()
+        info.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        info.wShowWindow = 0  # Run Hidden
+        os.environ[key] = value
+        subprocess.Popen(["setx", key, value], startupinfo=info)
+
+    # force process to be DPI Aware avoiding Window scalinf with blur with Qt6
+    # as the same effect than change pythonw.exe property to DPI Aware
+    try:  # >= win 8.1
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+    except:  # win 8.0 or less
+        ctypes.windll.user32.SetProcessDPIAware()
+
+
+elif os.name == "posix":
+    # from posix import environ as environ_posix
+
+    # encoding = sys.getfilesystemencoding()
+    # orignal_environ = {
+    #    key.decode(encoding, "surrogateescape"): value.decode(
+    #        encoding, "surrogateescape"
+    #    )
+    #    for key, value in environ_posix.items()
+    # }
+    env_path = os.path.expanduser("~/.config/plasma-workspace/env/QtEnvironment.sh")
+    orignal_environ = dict()
+    if os.path.exists(env_path):
+        with open(env_path, "r") as f:
+            lines = f.readlines()
+            for i, line in enumerate(lines):
+                if line.startswith("export "):
+                    key, value = line[7:].strip().split("=")
+                    orignal_environ[key] = value
+
+    def get_env(key, default=None):
+        if key in os.environ:
+            return os.environ[key]
+        return orignal_environ.get(key, default)
+
+    def set_env(key, value):
+        os.environ[key] = value
+        env_path = os.path.expanduser("~/.config/plasma-workspace/env/QtEnvironment.sh")
+        if os.path.exists(env_path):
+            with open(env_path, "r") as f:
+                lines = f.readlines()
+                for i, line in enumerate(lines):
+                    if line.startswith(f"export {key}="):
+                        lines[i] = f"export {key}={value}\n"
+                        break
+                else:
+                    lines.append(f"export {key}={value}\n")
+        else:
+            lines = [f"export {key}={value}\n"]
+        with open(env_path, "w") as f:
+            f.writelines(lines)
+
+else:
+    raise Exception("unknow OS")
+
+
+# disable  Qt Scaling and leave use scale all wath we decide with the scaled function
+os.environ["QT_ENABLE_HIGHDPI_SCALING"] = "0"
+os.environ["QT_USE_PHYSICAL_DPI"] = "1"
+
+
+QT_FONT_SIZE = get_env("QT_FONT_SIZE", "default").lower()
+QT_FONT = get_env("QT_FONT", "default")
 
 class PythonQtError(RuntimeError):
     """Generic error superclass for QtPy."""
@@ -157,12 +255,32 @@ binding_specified = QT_API in os.environ
 
 API_NAMES = {'pyqt5': 'PyQt5', 'pyside2': 'PySide2',
              'pyqt6': 'PyQt6', 'pyside6': 'PySide6'}
-API = os.environ.get(QT_API, 'pyqt5').lower()
+modules = list(API_NAMES.values())
+
+# allow to change API without restarting Spyder on Windows
+API_ = get_env(QT_API, "auto")
+API = API_.lower()
+if os.path.split(sys.argv[0])[1] == "spyder":
+    API = "pyqt5"
+
+if API == "auto":
+    for module in modules:
+        if module in sys.modules:
+            API = module.lower()
+            break
+    else:
+        for module in modules:
+            if importlib.util.find_spec(module) is not None:
+                API = module.lower()
+                break
+            else:
+                raise QtBindingsNotFoundError
+
 initial_api = API
-if API not in API_NAMES:
+if API not in list(API_NAMES.keys()) + list(API_NAMES.values()):
     raise PythonQtValueError(
-        f'Specified QT_API={repr(QT_API.lower())} is not in valid options: '
-        f'{API_NAMES}')
+        f'Specified QT_API={API_} environement variable is not in valid options: {", ".join(["default"] + list(API_NAMES.values()))}'
+    )
 
 is_old_pyqt = is_pyqt46 = False
 QT5 = PYQT5 = True
@@ -171,17 +289,6 @@ QT4 = QT6 = PYQT4 = PYQT6 = PYSIDE = PYSIDE2 = PYSIDE6 = False
 PYQT_VERSION = None
 PYSIDE_VERSION = None
 QT_VERSION = None
-
-# Unless `FORCE_QT_API` is set, use previously imported Qt Python bindings
-if not os.environ.get('FORCE_QT_API'):
-    if 'PyQt5' in sys.modules:
-        API = initial_api if initial_api in PYQT5_API else 'pyqt5'
-    elif 'PySide2' in sys.modules:
-        API = initial_api if initial_api in PYSIDE2_API else 'pyside2'
-    elif 'PyQt6' in sys.modules:
-        API = initial_api if initial_api in PYQT6_API else 'pyqt6'
-    elif 'PySide6' in sys.modules:
-        API = initial_api if initial_api in PYSIDE6_API else 'pyside6'
 
 if API in PYQT5_API:
     try:
@@ -273,6 +380,7 @@ if API != initial_api and binding_specified:
 
 # Set display name of the Qt API
 API_NAME = API_NAMES[API]
+os.environ["PYQTGRAPH_QT_LIB"] = API_NAME
 
 try:
     # QtDataVisualization backward compatibility (QtDataVisualization vs. QtDatavisualization)
@@ -309,3 +417,53 @@ elif PYSIDE_VERSION:
         _warn_old_minor_version('PySide2', PYSIDE_VERSION, PYSIDE2_VERSION_MIN)
     elif PYSIDE6 and (parse(PYSIDE_VERSION) < parse(PYSIDE6_VERSION_MIN)):
         _warn_old_minor_version('PySide6', PYSIDE_VERSION, PYSIDE6_VERSION_MIN)
+
+
+ 
+
+from qtpy import QtCore, QtWidgets
+
+eps = sys.float_info.epsilon
+
+
+QT_SCALE = get_env("QT_SCALE", "auto").lower()
+if QT_SCALE == "auto":
+    QT_SCALE = None
+else:
+    QT_SCALE = float(QT_SCALE)
+    if QT_SCALE == round(QT_SCALE):
+        QT_SCALE = int(QT_SCALE)
+
+
+def scaled(obj, *args):
+    # scale = QtGui.QFontMetrics(QtGui.QFont()).height()/25.
+    global QT_SCALE
+    if QT_SCALE is None:
+        QT_SCALE = QtWidgets.QApplication.screens()[0].logicalDotsPerInch() / 192.0
+    scale = QT_SCALE
+    if scale == 0:
+        scale
+    if args:
+        return scaled((obj,) + args)
+    elif scale == 1:
+        return obj
+    elif isinstance(obj, QtCore.QRect):
+        x, y, width, height = obj.getRect()
+        return QtCore.QRect(
+            round(x * scale + eps),
+            round(y * scale + eps),
+            round(width * scale + eps),
+            round(height * scale + eps),
+        )
+    elif isinstance(obj, int):
+        return int(round(obj * scale + eps))  # id somthing make 1 pixel, and scale 0.5
+    elif isinstance(obj, tuple):
+        return (scaled(elt) for elt in obj)
+    elif isinstance(obj, list):
+        return [scaled(elt) for elt in obj]
+    else:  # float , QtCore.QMargins, QtCore.QSize
+        return obj * scale
+
+
+if __name__ == "__main__":
+    scaled(1)

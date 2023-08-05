@@ -9,7 +9,7 @@
 """Provides widget classes and functions."""
 from functools import wraps
 
-from . import PYQT5, PYQT6, PYSIDE2, PYSIDE6, QtModuleNotInstalledError
+from . import QT_FONT_SIZE, QT_FONT, PYQT5, PYQT6, PYSIDE2, PYSIDE6
 from ._utils import possibly_static_exec, getattr_missing_optional_dep
 
 
@@ -114,3 +114,22 @@ else:
     QFileDialog.getOpenFileName = _dir_to_directory(QFileDialog.getOpenFileName)
     QFileDialog.getOpenFileNames = _dir_to_directory(QFileDialog.getOpenFileNames)
     QFileDialog.getSaveFileName = _dir_to_directory(QFileDialog.getSaveFileName)
+
+
+if QT_FONT_SIZE != "default" or QT_FONT != "default":
+    QApplication_old_init = QApplication.__init__
+
+    def QApplication_new_init(self, *args, **kwargs):
+        QApplication_old_init(self, *args, **kwargs)
+        font = self.font()
+        if QT_FONT_SIZE != "default":
+            # print(font.pointSizeF())
+            if QT_FONT_SIZE.isdigit():
+                font.setPointSizeF(float(QT_FONT_SIZE))
+            if QT_FONT_SIZE.endswith("pixels"):
+                font.setPixelSize(int(QT_FONT_SIZE[:-6]))
+        if QT_FONT != "default":
+            font.setFamily(QT_FONT)
+        self.setFont(font)
+
+    QApplication.__init__ = QApplication_new_init
