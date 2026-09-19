@@ -156,3 +156,27 @@ def test_qtgui_namespace_mightBeRichText():
     See: https://doc.qt.io/qt-5/qt-sub-qtgui.html
     """
     assert QtCore.Qt.mightBeRichText is not None
+
+
+def test_QTimer_singleShot_with_receiver():
+    """QTimer.singleShot(msec, receiver, slot), forme à trois arguments de PySide : le tir
+    est abandonné si receiver est détruit avant. PyQt ne l'a pas nativement."""
+    from qtpy import QtCore, PYQT5, PYQT6
+
+    qapp = QtCore.QCoreApplication.instance() or QtCore.QCoreApplication([])
+    fired = []
+    alive = QtCore.QObject()
+    QtCore.QTimer.singleShot(0, alive, lambda: fired.append("alive"))
+    dead = QtCore.QObject()
+    QtCore.QTimer.singleShot(0, dead, lambda: fired.append("dead"))
+    if PYQT5 or PYQT6:
+        from qtpy import sip
+
+        sip.delete(dead)
+    else:
+        from qtpy import shiboken
+
+        shiboken.delete(dead)
+    for _ in range(10):
+        qapp.processEvents()
+    assert fired == ["alive"]

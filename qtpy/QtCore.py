@@ -104,6 +104,25 @@ elif PYSIDE6:
     QThread.exec_ = lambda self, *args, **kwargs: self.exec(*args, **kwargs)
     QTextStreamManipulator.exec_ = lambda self, *args, **kwargs: self.exec(*args, **kwargs)
 
+# QTimer.singleShot(msec, receiver, slot) : forme à trois arguments de PySide, où le tir
+# est abandonné si receiver est détruit avant. PyQt n'a que (msec, slot) et
+# (msec, timerType, slot) : un QTimer enfant de receiver rend le même service.
+if PYQT5 or PYQT6:
+    _singleShot = QTimer.singleShot
+
+    def _singleShot_with_receiver(msec, *args):
+        if len(args) == 2 and isinstance(args[0], QObject):
+            receiver, slot = args
+            timer = QTimer(receiver)
+            timer.setSingleShot(True)
+            timer.timeout.connect(slot)
+            timer.timeout.connect(timer.deleteLater)
+            timer.start(msec)
+        else:
+            _singleShot(msec, *args)
+
+    QTimer.singleShot = staticmethod(_singleShot_with_receiver)
+
 # For issue #153 and updated for issue #305
 if PYQT5 or PYQT6:
     QDate.toPython = lambda self, *args, **kwargs: self.toPyDate(*args, **kwargs)
